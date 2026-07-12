@@ -24,6 +24,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
@@ -387,7 +388,7 @@ except requests.exceptions.RequestException as e:
     st.error(f"No se pudo conectar con Open-Meteo: {e}")
     st.stop()
 
-# Hora real que reporta la API (no el reloj de Python, que solo se actualiza al recargar)
+# Hora real que reporta la API (referencia de cuándo se leyó el dato, no un reloj en vivo)
 hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %I:%M %p")
 
 # --- Indicadores de estado ---
@@ -399,11 +400,36 @@ with s2:
 with s3:
     st.markdown("🟢 **IA Activa**")
 
-col_time, col_refresh, col_badge = st.columns([2.5, 1, 1])
+col_clock, col_time, col_refresh, col_badge = st.columns([1.3, 2, 1, 1])
+
+with col_clock:
+    st.markdown("<p style='color:#9ca3af; margin-bottom:0;'>Hora actual (en vivo):</p>", unsafe_allow_html=True)
+    # Reloj en JavaScript puro: corre en el navegador y tickea cada segundo
+    # SIN depender de que Streamlit vuelva a ejecutar el script. Esto es lo
+    # que soluciona que la hora se quedara "congelada" en la app publicada.
+    components.html(
+        """
+        <div id="reloj-vivo" style="font-family:'Source Sans Pro',sans-serif;
+             color:#22c55e; font-weight:700; font-size:18px;"></div>
+        <script>
+        function actualizarRelojVivo() {
+            const opciones = {hour:'2-digit', minute:'2-digit', second:'2-digit',
+                               hour12:true, timeZone:'America/Panama'};
+            document.getElementById('reloj-vivo').innerText =
+                new Date().toLocaleTimeString('es-PA', opciones);
+        }
+        actualizarRelojVivo();
+        setInterval(actualizarRelojVivo, 1000);
+        </script>
+        <style> html, body { background-color: transparent; margin:0; padding:0; } </style>
+        """,
+        height=30,
+    )
+
 with col_time:
     st.markdown(
-        f"<p style='color:#9ca3af; margin-bottom:0;'>Última actualización (hora de la API):</p>"
-        f"<p style='color:#22c55e; font-weight:700; font-size:18px;'>{hora_api}</p>",
+        f"<p style='color:#9ca3af; margin-bottom:0;'>Última lectura de datos (API):</p>"
+        f"<p style='color:#e5e7eb; font-weight:700; font-size:18px;'>{hora_api}</p>",
         unsafe_allow_html=True,
     )
 with col_refresh:
@@ -419,8 +445,9 @@ st.caption(
     f"📍 {ciudad}, {provincia} · lat {lat:.4f}, lon {lon:.4f} — "
     "nota: ciudades muy cercanas entre sí (menos de ~15 km) pueden mostrar "
     "valores casi idénticos porque el modelo climático de Open-Meteo trabaja "
-    "con celdas de ~11-25 km de resolución. Los datos se cachean 5 minutos; "
-    "usa el botón Actualizar para forzar una lectura nueva."
+    "con celdas de ~11-25 km de resolución. Los datos de clima se cachean 5 minutos; "
+    "usa el botón Actualizar para forzar una lectura nueva (el reloj de arriba sí es en vivo, segundo a segundo)."
+
 )
 
 actual = clima["current"]
