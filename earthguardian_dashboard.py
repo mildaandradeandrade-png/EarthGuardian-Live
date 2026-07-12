@@ -325,7 +325,7 @@ with st.sidebar:
     st.divider()
     seccion = st.radio(
         "Navegación",
-        ["📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial", "🧠 Predicción IA", "ℹ️ Acerca del proyecto"],
+        ["📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial", "🧠 Predicción IA", "📄 Acerca del proyecto"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -390,7 +390,7 @@ except requests.exceptions.RequestException as e:
 
 # Hora real que reporta la API (referencia de cuándo se leyó el dato, no un reloj en vivo)
 hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %H:%M")
-aire_disponible = aqi is not None
+aire_disponible = aire["current"].get("european_aqi") is not None
 
 # --- Fuente y hora del dato: bien visible ---
 st.markdown(
@@ -733,7 +733,7 @@ elif seccion == "🧠 Predicción IA":
 # ----------------------------------------------------------------------------
 # SECCIÓN: ACERCA DEL PROYECTO
 # ----------------------------------------------------------------------------
-elif seccion == "ℹ️ Acerca del proyecto":
+elif seccion == "📄 Acerca del proyecto":
     st.markdown("<div class='section-title'>ACERCA DEL PROYECTO</div>", unsafe_allow_html=True)
 
     st.markdown("### 🎯 Objetivo")
