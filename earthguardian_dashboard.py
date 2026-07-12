@@ -325,7 +325,8 @@ with st.sidebar:
     st.divider()
     seccion = st.radio(
         "Navegación",
-        ["📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial", "🧠 Predicción IA", "📄 Acerca del proyecto"],
+        ["🏠 Inicio", "📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial",
+         "🧠 Predicción IA", "📄 Acerca del proyecto"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -412,11 +413,11 @@ st.markdown(
 # --- Indicadores de estado ---
 s1, s2, s3 = st.columns(3)
 with s1:
-    st.markdown(f"{'🟢' if conectado else '🔴'} **API meteorológica conectada**")
+    st.markdown(f"{'🟢' if conectado else '🔴'} **API Meteorológica**")
 with s2:
-    st.markdown(f"{'🟢' if aire_disponible else '🔴'} **Calidad del aire disponible**")
+    st.markdown(f"{'🟢' if aire_disponible else '🔴'} **Calidad del Aire**")
 with s3:
-    st.markdown("🟢 **Modelo de IA listo**")
+    st.markdown("🟢 **Red Neuronal Disponible**")
 
 col_clock, col_refresh, col_badge = st.columns([2.5, 1, 1])
 
@@ -481,9 +482,66 @@ nivel_aire_txt = ("Buena" if (aqi or 0) < 40 else "Moderada" if (aqi or 0) < 80
 riesgos = calcular_riesgos(temp, humedad, viento, lluvia, uv, aqi)
 
 # ----------------------------------------------------------------------------
+# SECCIÓN: INICIO (HOME)
+# ----------------------------------------------------------------------------
+if seccion == "🏠 Inicio":
+    st.markdown(
+        """
+        <div style='text-align:center; padding: 30px 10px 10px 10px;'>
+            <h1 style='margin-bottom:0;'>🌎 EARTHGUARDIAN <span style='color:#22c55e;'>LIVE</span></h1>
+            <p style='color:#9ca3af; font-size:16px; letter-spacing:1px;'>
+                Sistema Inteligente para el Monitoreo, Clasificación y Predicción de Riesgos Ambientales
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        st.markdown(f"{'🟢' if conectado else '🔴'} **API Meteorológica**")
+    with s2:
+        st.markdown(f"{'🟢' if aire_disponible else '🔴'} **Calidad del Aire**")
+    with s3:
+        st.markdown("🟢 **Red Neuronal Disponible**")
+
+    st.divider()
+
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.markdown("### 🌎 ¿Qué es?")
+        st.markdown(
+            "**EarthGuardian Live** es un panel de monitoreo ambiental en tiempo real para ciudades "
+            "de Panamá. Muestra condiciones actuales del clima, clasifica riesgos ambientales "
+            "(incendio, inundación, ola de calor, calidad del aire) y usa una red neuronal para "
+            "proyectar la temperatura hacia adelante."
+        )
+    with col_b:
+        st.markdown("### 🎯 ¿Qué problema resuelve?")
+        st.markdown(
+            "Reúne en un solo lugar información que normalmente está dispersa (clima, calidad del "
+            "aire, riesgos) y la traduce en indicadores simples de leer — pensado para que cualquier "
+            "persona, no solo un meteorólogo, entienda rápido qué está pasando y qué podría venir."
+        )
+    with col_c:
+        st.markdown("### 🛠️ ¿Qué tecnologías usa?")
+        st.markdown(
+            "**Python 3** · **Streamlit** (interfaz web) · **Open-Meteo** (datos climáticos abiertos, "
+            "sin API key) · **Plotly** (gráficas y mapas interactivos) · **Scikit-learn** "
+            "(red neuronal MLPRegressor para la predicción)."
+        )
+
+    st.divider()
+    st.info(
+        "👈 Usa el menú de la izquierda para explorar el **Resumen** de condiciones actuales, el "
+        "**Mapa** de riesgos, el **Historial**, la **Predicción con IA**, o conocer más en "
+        "**Acerca del proyecto**."
+    )
+
+# ----------------------------------------------------------------------------
 # SECCIÓN: RESUMEN
 # ----------------------------------------------------------------------------
-if seccion == "📊 Resumen":
+elif seccion == "📊 Resumen":
     st.markdown("<div class='section-title'>CONDICIONES ACTUALES</div>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     tarjetas = [
@@ -674,6 +732,21 @@ elif seccion == "🧠 Predicción IA":
                     f"<p class='value'>{limites[0]+1.5:.1f}° – {limites[1]-1.5:.1f}°C</p></div>",
                     unsafe_allow_html=True)
 
+    calidad_r2 = ("excelente" if r2 >= 0.9 else "buena" if r2 >= 0.7 else
+                  "aceptable" if r2 >= 0.5 else "débil")
+    with st.expander("❓ ¿Qué significan el MAE y el R²?"):
+        st.markdown(
+            f"**MAE (Error Absoluto Medio)** — en promedio, cada predicción del modelo se equivoca "
+            f"por **±{mae:.2f}°C** respecto a la temperatura real. Mientras más bajo, mejor: un MAE "
+            f"de 1°C es muy bueno para temperatura; uno de 4-5°C ya es un margen de error considerable.\n\n"
+            f"**R² (coeficiente de determinación)** — indica qué tan bien el modelo explica el "
+            f"comportamiento real de la temperatura, en una escala de 0 a 1. Un R² de **{r2:.3f}** "
+            f"significa que el modelo captura aproximadamente el **{max(r2, 0)*100:.0f}%** del patrón "
+            f"(el resto es variación que el modelo no logra explicar, como frentes fríos o lluvias "
+            f"puntuales). En este caso, el ajuste es **{calidad_r2}**.\n\n"
+            f"En resumen: entre más bajo el MAE y más cercano a 1 el R², más confiable es la predicción."
+        )
+
     fig = go.Figure()
     ultimos = df.tail(7 * 24)
     fig.add_trace(go.Scatter(x=ultimos["time"], y=ultimos["temperature_2m"],
@@ -800,10 +873,14 @@ st.markdown(
         <p style='font-size:18px; font-weight:800; color:#e5e7eb; margin-bottom:2px;'>
             🌎 EarthGuardian Live
         </p>
-        <p style='margin:2px 0; font-size:14px;'>Sistema Inteligente de Monitoreo Ambiental</p>
-        <p style='margin:2px 0; font-size:13px; color:#6b7280;'>Universidad / Learning Vila</p>
+        <p style='margin:2px 0; font-size:14px;'>
+            Sistema Inteligente para el Monitoreo,<br>Clasificación y Predicción de Riesgos Ambientales
+        </p>
+        <p style='margin-top:10px; font-size:13px; color:#6b7280;'>
+            Python • Streamlit • Open-Meteo • Plotly • Scikit-learn
+        </p>
         <p style='margin-top:10px; font-size:11px; color:#4b5563;'>
-            Datos proporcionados por Open-Meteo.com · sin necesidad de API key
+            Universidad / Learning Vila · Datos proporcionados por Open-Meteo.com · sin necesidad de API key
         </p>
     </div>
     """,
