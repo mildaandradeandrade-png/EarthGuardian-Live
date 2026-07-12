@@ -325,7 +325,7 @@ with st.sidebar:
     st.divider()
     seccion = st.radio(
         "Navegación",
-        ["📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial", "🧠 Predicción IA"],
+        ["📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial", "🧠 Predicción IA", "ℹ️ Acerca del proyecto"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -389,18 +389,36 @@ except requests.exceptions.RequestException as e:
     st.stop()
 
 # Hora real que reporta la API (referencia de cuándo se leyó el dato, no un reloj en vivo)
-hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %I:%M %p")
+hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %H:%M")
+aire_disponible = aqi is not None
+
+# --- Fuente y hora del dato: bien visible ---
+st.markdown(
+    f"""
+    <div style='background-color:#111827; border-left:5px solid #22c55e; border-radius:8px;
+                padding:12px 20px; margin-bottom:14px; display:flex; gap:32px; align-items:center;
+                flex-wrap:wrap;'>
+        <span style='color:#e5e7eb; font-size:15px;'>
+            📡 <strong>Fuente:</strong> Open-Meteo
+        </span>
+        <span style='color:#e5e7eb; font-size:15px;'>
+            🕐 <strong>Última actualización:</strong> {hora_api}
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # --- Indicadores de estado ---
 s1, s2, s3 = st.columns(3)
 with s1:
-    st.markdown("🟢 **Sistema Operativo**")
+    st.markdown(f"{'🟢' if conectado else '🔴'} **API meteorológica conectada**")
 with s2:
-    st.markdown(f"{'🟢' if conectado else '🔴'} **API Open-Meteo Conectada**")
+    st.markdown(f"{'🟢' if aire_disponible else '🔴'} **Calidad del aire disponible**")
 with s3:
-    st.markdown("🟢 **IA Activa**")
+    st.markdown("🟢 **Modelo de IA listo**")
 
-col_clock, col_time, col_refresh, col_badge = st.columns([1.3, 2, 1, 1])
+col_clock, col_refresh, col_badge = st.columns([2.5, 1, 1])
 
 with col_clock:
     st.markdown("<p style='color:#9ca3af; margin-bottom:0;'>Hora actual (en vivo):</p>", unsafe_allow_html=True)
@@ -426,12 +444,6 @@ with col_clock:
         height=30,
     )
 
-with col_time:
-    st.markdown(
-        f"<p style='color:#9ca3af; margin-bottom:0;'>Última lectura de datos (API):</p>"
-        f"<p style='color:#e5e7eb; font-weight:700; font-size:18px;'>{hora_api}</p>",
-        unsafe_allow_html=True,
-    )
 with col_refresh:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Actualizar", use_container_width=True):
@@ -449,6 +461,7 @@ st.caption(
     "usa el botón Actualizar para forzar una lectura nueva (el reloj de arriba sí es en vivo, segundo a segundo)."
 
 )
+
 
 actual = clima["current"]
 temp = actual["temperature_2m"]
@@ -716,6 +729,69 @@ elif seccion == "🧠 Predicción IA":
         "del mundo —ni GFS ni ECMWF— predice con precisión más allá de ~10-16 días: esto muestra el "
         "patrón estacional típico, no el clima exacto de cada día."
     )
+
+# ----------------------------------------------------------------------------
+# SECCIÓN: ACERCA DEL PROYECTO
+# ----------------------------------------------------------------------------
+elif seccion == "ℹ️ Acerca del proyecto":
+    st.markdown("<div class='section-title'>ACERCA DEL PROYECTO</div>", unsafe_allow_html=True)
+
+    st.markdown("### 🎯 Objetivo")
+    st.markdown(
+        "EarthGuardian Live busca ofrecer **monitoreo ambiental accesible y en tiempo real** para "
+        "ciudades de Panamá, combinando datos meteorológicos abiertos con un modelo de inteligencia "
+        "artificial que ayuda a anticipar patrones de temperatura. La meta es que cualquier persona "
+        "—estudiantes, docentes, o el público general— pueda consultar condiciones actuales, riesgos "
+        "ambientales (incendio, inundación, ola de calor, calidad del aire) y una proyección de "
+        "temperatura, sin depender de servicios de pago."
+    )
+
+    st.markdown("### 🛠️ Tecnologías utilizadas")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        st.markdown(
+            "- **Python 3** — lenguaje base del proyecto\n"
+            "- **Streamlit** — framework del dashboard web\n"
+            "- **Plotly** — gráficas y mapas interactivos\n"
+            "- **Pandas / NumPy** — procesamiento de datos"
+        )
+    with col_t2:
+        st.markdown(
+            "- **scikit-learn (MLPRegressor)** — red neuronal de predicción\n"
+            "- **Requests** — consumo de APIs REST\n"
+            "- **Streamlit Cloud** — despliegue y hosting\n"
+            "- **HTML/CSS/JavaScript** — reloj en vivo y estilos"
+        )
+
+    st.markdown("### 🔌 APIs")
+    st.markdown(
+        "- **[Open-Meteo Forecast API](https://open-meteo.com/)** — clima actual y horario, sin API key\n"
+        "- **Open-Meteo Archive API** — histórico horario real, usado para entrenar la red neuronal\n"
+        "- **Open-Meteo Air Quality API** — índice de calidad del aire (AQI europeo)"
+    )
+
+    st.markdown("### 🏗️ Arquitectura")
+    st.code(
+        "   Open-Meteo API\n"
+        "         │\n"
+        "         ▼\n"
+        "     EarthGuardian\n"
+        "         │\n"
+        "     Python + Streamlit\n"
+        "         │\n"
+        "         ▼\n"
+        "     Dashboard Web",
+        language=None,
+    )
+    st.markdown(
+        "En términos simples: el navegador del usuario carga el **Dashboard Web**, que corre sobre "
+        "**Python + Streamlit**. Ese backend le pide datos en tiempo real a la **API de Open-Meteo** "
+        "(clima, histórico y calidad del aire), los procesa —clasifica riesgos, entrena la red "
+        "neuronal con el histórico— y renderiza el resultado como tarjetas, gráficas y mapas."
+    )
+
+    st.markdown("### ✍️ Autores")
+    st.markdown("**Luz Alba Andrade**")
 
 st.markdown(
     """
