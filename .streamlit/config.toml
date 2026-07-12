@@ -1,0 +1,9 @@
+[client]
+# "minimal" oculta el menú hamburguesa interno de Streamlit (Rerun, Settings, etc.)
+# dentro del área de tu app. NO afecta la barra de administración de Streamlit
+# Cloud (Share/estrella/lápiz/GitHub) — esa la controla la plataforma, no este
+# archivo, y solo la ve el dueño de la app con sesión iniciada.
+toolbarMode = "minimal"
+
+[theme]
+base = "dark"
