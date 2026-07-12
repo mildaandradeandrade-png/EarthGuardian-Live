@@ -1,0 +1,12 @@
+streamlit
+plotly
+pandas
+requests
+numpy
+streamlit
+plotly
+pandas
+requests
+numpy
+scikit-learn
+tensorflow
