@@ -17,19 +17,18 @@ Ejecutar con:
     streamlit run earthguardian_dashboard.py
 """
 
-import time
 from datetime import datetime, timedelta
 
-import plotly.graph_objects as go
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
-
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
 # ----------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ----------------------------------------------------------------------------
@@ -255,153 +254,64 @@ def gauge_riesgo(valor: int, color: str) -> go.Figure:
 
 
 # ----------------------------------------------------------------------------
-# PREDICCIÓN CON RED NEURONAL (MLPRegressor)
+# PREDICCIÓN CON RED NEURONAL (versión simplificada: 1 solo modelo, sin recursión)
 # ----------------------------------------------------------------------------
-FEATURES_MODELO = [
-    "hora_sin", "hora_cos", "doy_sin", "doy_cos",
-    "temp_lag1", "temp_lag2", "temp_lag3", "temp_lag24",
-    "humedad_lag1", "viento_lag1",
-]
-FEATURES_ESTACIONALES = ["hora_sin", "hora_cos", "doy_sin", "doy_cos"]
+FEATURES = ["hora_sin", "hora_cos", "doy_sin", "doy_cos"]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def obtener_historico(lat: float, lon: float, dias: int = 60) -> pd.DataFrame:
-    """Descarga histórico horario real desde la API de archivo de Open-Meteo."""
-    fin = datetime.now().date() - timedelta(days=1)   # el archivo suele tener 1-2 días de rezago
+    """Histórico horario real de Open-Meteo, ya con las variables cíclicas listas."""
+    fin = datetime.now().date() - timedelta(days=1)
     inicio = fin - timedelta(days=dias)
-    url = "https://archive-api.open-meteo.com/v1/archive"
-    params = {
-        "latitude": lat,
-        "longitude": lon,
-        "start_date": inicio.isoformat(),
-        "end_date": fin.isoformat(),
-        "hourly": "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation",
-        "timezone": "America/Panama",
-    }
-    r = requests.get(url, params=params, timeout=30)
+    r = requests.get(
+        "https://archive-api.open-meteo.com/v1/archive",
+        params={"latitude": lat, "longitude": lon,
+                "start_date": inicio.isoformat(), "end_date": fin.isoformat(),
+                "hourly": "temperature_2m", "timezone": "America/Panama"},
+        timeout=30,
+    )
     r.raise_for_status()
     df = pd.DataFrame(r.json()["hourly"])
     df["time"] = pd.to_datetime(df["time"])
-    return df.dropna().reset_index(drop=True)
-
-
-def construir_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Genera variables cíclicas de tiempo + rezagos (lags) para el modelo."""
-    df = df.sort_values("time").reset_index(drop=True).copy()
     df["hora_sin"] = np.sin(2 * np.pi * df["time"].dt.hour / 24)
     df["hora_cos"] = np.cos(2 * np.pi * df["time"].dt.hour / 24)
     df["doy_sin"] = np.sin(2 * np.pi * df["time"].dt.dayofyear / 365)
     df["doy_cos"] = np.cos(2 * np.pi * df["time"].dt.dayofyear / 365)
-    for lag in (1, 2, 3, 24):
-        df[f"temp_lag{lag}"] = df["temperature_2m"].shift(lag)
-    df["humedad_lag1"] = df["relative_humidity_2m"].shift(1)
-    df["viento_lag1"] = df["wind_speed_10m"].shift(1)
     return df.dropna().reset_index(drop=True)
 
 
-@st.cache_resource(show_spinner="🧠 Entrenando red neuronal con datos históricos...")
+@st.cache_resource(show_spinner="🧠 Entrenando red neuronal...")
 def entrenar_modelo(lat: float, lon: float, dias: int):
-    """
-    Entrena DOS redes neuronales sobre el mismo histórico:
-      - `modelo`            (con rezagos): para el pronóstico recursivo de 24h.
-      - `modelo_estacional`  (solo hora/día del año): para el patrón de 1 mes,
-        sin recursión, así que no puede "irse de rango" acumulando error.
-    """
-    df_hist = obtener_historico(lat, lon, dias)
-    df_feat = construir_features(df_hist)
-
-    corte = int(len(df_feat) * 0.85)
-    train, test = df_feat.iloc[:corte], df_feat.iloc[corte:]
+    """Un solo MLP: aprende el patrón hora-del-día + día-del-año → temperatura."""
+    df = obtener_historico(lat, lon, dias)
+    corte = int(len(df) * 0.85)
+    train, test = df.iloc[:corte], df.iloc[corte:]
 
     modelo = make_pipeline(
         StandardScaler(),
-        MLPRegressor(
-            hidden_layer_sizes=(32, 16),
-            activation="relu",
-            solver="adam",
-            max_iter=3000,
-            random_state=42,
-            early_stopping=True,
-        ),
+        MLPRegressor(hidden_layer_sizes=(16, 8), max_iter=3000,
+                     random_state=42, early_stopping=True),
     )
-    modelo.fit(train[FEATURES_MODELO], train["temperature_2m"])
+    modelo.fit(train[FEATURES], train["temperature_2m"])
 
-    pred_test = modelo.predict(test[FEATURES_MODELO])
+    pred_test = modelo.predict(test[FEATURES])
     mae = mean_absolute_error(test["temperature_2m"], pred_test)
     r2 = r2_score(test["temperature_2m"], pred_test)
-
-    modelo_estacional = make_pipeline(
-        StandardScaler(),
-        MLPRegressor(
-            hidden_layer_sizes=(16, 8),
-            activation="relu",
-            solver="adam",
-            max_iter=3000,
-            random_state=42,
-            early_stopping=True,
-        ),
-    )
-    modelo_estacional.fit(df_feat[FEATURES_ESTACIONALES], df_feat["temperature_2m"])
-
-    # Límites de seguridad: nunca predecir fuera del rango histórico real (+margen pequeño)
-    temp_min = float(df_feat["temperature_2m"].min())
-    temp_max = float(df_feat["temperature_2m"].max())
-    limites = (temp_min - 1.5, temp_max + 1.5)
-
-    return modelo, modelo_estacional, df_feat, mae, r2, test, pred_test, limites
+    limites = (df["temperature_2m"].min() - 1.5, df["temperature_2m"].max() + 1.5)
+    return modelo, df, mae, r2, test, pred_test, limites
 
 
-def pronosticar(modelo, df_feat: pd.DataFrame, horas: int, limites: tuple) -> pd.DataFrame:
-    """Pronóstico recursivo hora a hora (24h), con límites de seguridad basados en el histórico real."""
-    ventana_temp = df_feat["temperature_2m"].tolist()[-24:]
-    humedad_actual = df_feat["relative_humidity_2m"].iloc[-1]
-    viento_actual = df_feat["wind_speed_10m"].iloc[-1]
-    tiempo_actual = df_feat["time"].iloc[-1]
-    minimo, maximo = limites
-
-    filas = []
-    for i in range(1, horas + 1):
-        t = tiempo_actual + timedelta(hours=i)
-        fila = {
-            "hora_sin": np.sin(2 * np.pi * t.hour / 24),
-            "hora_cos": np.cos(2 * np.pi * t.hour / 24),
-            "doy_sin": np.sin(2 * np.pi * t.timetuple().tm_yday / 365),
-            "doy_cos": np.cos(2 * np.pi * t.timetuple().tm_yday / 365),
-            "temp_lag1": ventana_temp[-1],
-            "temp_lag2": ventana_temp[-2],
-            "temp_lag3": ventana_temp[-3],
-            "temp_lag24": ventana_temp[-24] if len(ventana_temp) >= 24 else ventana_temp[0],
-            "humedad_lag1": humedad_actual,
-            "viento_lag1": viento_actual,
-        }
-        pred = float(modelo.predict(pd.DataFrame([fila])[FEATURES_MODELO])[0])
-        pred = min(max(pred, minimo), maximo)   # nunca se sale del rango histórico real
-        filas.append({"time": t, "temperatura_predicha": pred})
-        ventana_temp.append(pred)
-
-    return pd.DataFrame(filas)
-
-
-def pronosticar_estacional(modelo_estacional, df_feat: pd.DataFrame, horas: int, limites: tuple) -> pd.DataFrame:
-    """
-    Pronóstico climatológico para horizontes largos (ej. 1 mes): SIN recursión.
-    Cada hora se calcula de forma independiente solo a partir de su hora del día
-    y día del año, así que no hay forma de que el error se acumule o "dispare".
-    """
-    tiempo_actual = df_feat["time"].iloc[-1]
-    minimo, maximo = limites
-    tiempos = [tiempo_actual + timedelta(hours=i) for i in range(1, horas + 1)]
-
+def pronosticar(modelo, ultimo_tiempo, horas: int, limites: tuple) -> pd.DataFrame:
+    """Predice `horas` hacia adelante en un solo paso vectorizado (sin recursión)."""
+    tiempos = [ultimo_tiempo + timedelta(hours=i) for i in range(1, horas + 1)]
     X = pd.DataFrame({
         "hora_sin": [np.sin(2 * np.pi * t.hour / 24) for t in tiempos],
         "hora_cos": [np.cos(2 * np.pi * t.hour / 24) for t in tiempos],
         "doy_sin": [np.sin(2 * np.pi * t.timetuple().tm_yday / 365) for t in tiempos],
         "doy_cos": [np.cos(2 * np.pi * t.timetuple().tm_yday / 365) for t in tiempos],
     })
-    preds = modelo_estacional.predict(X[FEATURES_ESTACIONALES])
-    preds = np.clip(preds, minimo, maximo)
-
+    preds = np.clip(modelo.predict(X[FEATURES]), *limites)
     return pd.DataFrame({"time": tiempos, "temperatura_predicha": preds})
 
 
@@ -423,7 +333,19 @@ with st.sidebar:
 # ----------------------------------------------------------------------------
 # ENCABEZADO
 # ----------------------------------------------------------------------------
-col_title, col_prov, col_city, col_time, col_badge = st.columns([2.6, 1.2, 1.3, 1.3, 0.8])
+LOGO_SVG = """
+<svg width="54" height="54" viewBox="0 0 56 56" xmlns="http://www.w3.org/2000/svg">
+  <path d="M28 2 L52 12 V26 C52 40 42 50 28 54 C14 50 4 40 4 26 V12 Z"
+        fill="#0f2540" stroke="#22c55e" stroke-width="2"/>
+  <circle cx="28" cy="27" r="13" fill="#1d4ed8"/>
+  <path d="M17 23c3-4 8-2 10 1s6 1 9-2M16 31c4-2 9 1 12-1s7-3 10 0"
+        stroke="#22c55e" stroke-width="2" fill="none" stroke-linecap="round"/>
+</svg>
+"""
+
+col_logo, col_title = st.columns([0.6, 6])
+with col_logo:
+    st.markdown(f"<div style='margin-top:8px;'>{LOGO_SVG}</div>", unsafe_allow_html=True)
 with col_title:
     st.markdown(
         "<h1 style='margin-bottom:0;'>EARTHGUARDIAN "
@@ -432,37 +354,74 @@ with col_title:
         "MONITOREO AMBIENTAL EN TIEMPO REAL</p>",
         unsafe_allow_html=True,
     )
+
+col_prov, col_city = st.columns([1, 1])
 with col_prov:
     provincia = st.selectbox("Provincia", list(PROVINCIAS.keys()))
 with col_city:
     ciudad = st.selectbox("Ciudad", list(PROVINCIAS[provincia].keys()))
-with col_time:
-    st.markdown(
-        f"<p style='color:#9ca3af; margin-bottom:0;'>Actualización:</p>"
-        f"<p style='color:#22c55e; font-weight:700; font-size:20px;'>"
-        f"{datetime.now().strftime('%I:%M:%S %p')}</p>",
-        unsafe_allow_html=True,
-    )
-with col_badge:
-    st.markdown("<br><span class='live-badge'>🔴 EN VIVO</span>", unsafe_allow_html=True)
 
 lat, lon = PROVINCIAS[provincia][ciudad]["lat"], PROVINCIAS[provincia][ciudad]["lon"]
-st.caption(
-    f"📍 {ciudad}, {provincia} · lat {lat:.4f}, lon {lon:.4f} — "
-    "nota: ciudades muy cercanas entre sí (menos de ~15 km) pueden mostrar "
-    "valores casi idénticos porque el modelo climático de Open-Meteo trabaja "
-    "con celdas de ~11-25 km de resolución."
+
+# --- Mapa de Panamá como encabezado/banner ---
+fig_banner = go.Figure(go.Scattermapbox(
+    lat=[lat], lon=[lon], mode="markers",
+    marker=dict(size=17, color="#22c55e"),
+))
+fig_banner.update_layout(
+    mapbox=dict(style="carto-darkmatter", zoom=5.7, center=dict(lat=8.6, lon=-80.2)),
+    margin=dict(l=0, r=0, t=0, b=0), height=130,
+    paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
 )
+st.plotly_chart(fig_banner, use_container_width=True, config={"displayModeBar": False})
 
 # ----------------------------------------------------------------------------
 # OBTENER DATOS
 # ----------------------------------------------------------------------------
+conectado = True
 try:
     clima = obtener_clima(lat, lon)
     aire = obtener_calidad_aire(lat, lon)
 except requests.exceptions.RequestException as e:
+    conectado = False
     st.error(f"No se pudo conectar con Open-Meteo: {e}")
     st.stop()
+
+# Hora real que reporta la API (no el reloj de Python, que solo se actualiza al recargar)
+hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %I:%M %p")
+
+# --- Indicadores de estado ---
+s1, s2, s3 = st.columns(3)
+with s1:
+    st.markdown("🟢 **Sistema Operativo**")
+with s2:
+    st.markdown(f"{'🟢' if conectado else '🔴'} **API Open-Meteo Conectada**")
+with s3:
+    st.markdown("🟢 **IA Activa**")
+
+col_time, col_refresh, col_badge = st.columns([2.5, 1, 1])
+with col_time:
+    st.markdown(
+        f"<p style='color:#9ca3af; margin-bottom:0;'>Última actualización (hora de la API):</p>"
+        f"<p style='color:#22c55e; font-weight:700; font-size:18px;'>{hora_api}</p>",
+        unsafe_allow_html=True,
+    )
+with col_refresh:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("🔄 Actualizar", use_container_width=True):
+        obtener_clima.clear()
+        obtener_calidad_aire.clear()
+        st.rerun()
+with col_badge:
+    st.markdown("<br><span class='live-badge'>🔴 EN VIVO</span>", unsafe_allow_html=True)
+
+st.caption(
+    f"📍 {ciudad}, {provincia} · lat {lat:.4f}, lon {lon:.4f} — "
+    "nota: ciudades muy cercanas entre sí (menos de ~15 km) pueden mostrar "
+    "valores casi idénticos porque el modelo climático de Open-Meteo trabaja "
+    "con celdas de ~11-25 km de resolución. Los datos se cachean 5 minutos; "
+    "usa el botón Actualizar para forzar una lectura nueva."
+)
 
 actual = clima["current"]
 temp = actual["temperature_2m"]
@@ -655,17 +614,13 @@ elif seccion == "🧠 Predicción IA":
 
     try:
         with col_b:
-            (modelo, modelo_estacional, df_feat, mae, r2,
-             test, pred_test, limites) = entrenar_modelo(lat, lon, dias_hist)
+            modelo, df, mae, r2, test, pred_test, limites = entrenar_modelo(lat, lon, dias_hist)
     except requests.exceptions.RequestException as e:
         st.error(f"No se pudo descargar el histórico de Open-Meteo: {e}")
         st.stop()
 
     with st.spinner(f"Calculando pronóstico para las próximas {horas_pred} horas..."):
-        if horas_pred <= 24:
-            pronostico = pronosticar(modelo, df_feat, horas_pred, limites)
-        else:
-            pronostico = pronosticar_estacional(modelo_estacional, df_feat, horas_pred, limites)
+        pronostico = pronosticar(modelo, df["time"].iloc[-1], horas_pred, limites)
 
     m1, m2, m3 = st.columns(3)
     with m1:
@@ -680,7 +635,7 @@ elif seccion == "🧠 Predicción IA":
                     unsafe_allow_html=True)
 
     fig = go.Figure()
-    ultimos = df_feat.tail(7 * 24)
+    ultimos = df.tail(7 * 24)
     fig.add_trace(go.Scatter(x=ultimos["time"], y=ultimos["temperature_2m"],
                               name="Temperatura real (histórico)", line=dict(color="#3b82f6")))
     fig.add_trace(go.Scatter(x=test["time"], y=pred_test,
@@ -726,21 +681,28 @@ elif seccion == "🧠 Predicción IA":
         st.dataframe(tabla[["Fecha", "Promedio (°C)", "Mínima (°C)", "Máxima (°C)"]],
                      use_container_width=True, hide_index=True)
 
-    if horas_pred <= 24:
-        st.caption(
-            "⚠️ Modelo educativo: MLP entrenado con temperatura, humedad y viento históricos, más "
-            "variables cíclicas de hora/día del año. El pronóstico es recursivo (cada hora predicha "
-            "alimenta la siguiente), así que el error tiende a crecer con el horizonte. No reemplaza "
-            "modelos meteorológicos profesionales (GFS/ICON)."
-        )
-    else:
-        st.caption(
-            "⚠️ Importante sobre el pronóstico a 1 mes: ningún modelo meteorológico del mundo — "
-            "ni siquiera los profesionales como GFS o ECMWF — tiene capacidad predictiva real más "
-            "allá de ~10-16 días; el clima es un sistema caótico. Lo que ves aquí para semanas 3-4 "
-            "es esencialmente el **patrón estacional aprendido** por la red (climatología: qué tan "
-            "cálido/húmedo suele ser ese día del año en esta zona), no una predicción específica día "
-            "a día. Útil para tendencias generales, no para decisiones puntuales."
-        )
+    st.caption(
+        "⚠️ Modelo educativo (versión simplificada): una sola red neuronal que aprende únicamente el "
+        "patrón hora-del-día + día-del-año (climatología), sin usar la temperatura actual como punto de "
+        "partida. Es honesto y estable en cualquier horizonte, pero el pronóstico de 24h no reflejará "
+        "anomalías del momento (ej. un frente frío pasajero hoy). Para 1 mes, recuerda que ningún modelo "
+        "del mundo —ni GFS ni ECMWF— predice con precisión más allá de ~10-16 días: esto muestra el "
+        "patrón estacional típico, no el clima exacto de cada día."
+    )
 
-st.caption("🌎 EarthGuardian Live · Datos proporcionados por Open-Meteo.com (sin necesidad de API key)")
+st.markdown(
+    """
+    <div style='text-align:center; padding:28px 0 10px 0; margin-top:20px;
+                border-top:1px solid #1f2937; color:#9ca3af;'>
+        <p style='font-size:18px; font-weight:800; color:#e5e7eb; margin-bottom:2px;'>
+            🌎 EarthGuardian Live
+        </p>
+        <p style='margin:2px 0; font-size:14px;'>Sistema Inteligente de Monitoreo Ambiental</p>
+        <p style='margin:2px 0; font-size:13px; color:#6b7280;'>Universidad / Learning Vila</p>
+        <p style='margin-top:10px; font-size:11px; color:#4b5563;'>
+            Datos proporcionados por Open-Meteo.com · sin necesidad de API key
+        </p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
