@@ -390,7 +390,8 @@ except requests.exceptions.RequestException as e:
     st.stop()
 
 # Hora real que reporta la API (referencia de cuándo se leyó el dato, no un reloj en vivo)
-hora_api = pd.to_datetime(clima["current"]["time"]).strftime("%d/%m/%Y %H:%M")
+ahora_real = pd.to_datetime(clima["current"]["time"])
+hora_api = ahora_real.strftime("%d/%m/%Y %H:%M")
 aire_disponible = aire["current"].get("european_aqi") is not None
 
 # --- Fuente y hora del dato: bien visible ---
@@ -583,7 +584,7 @@ elif seccion == "📊 Resumen":
         for icono, texto in generar_recomendaciones(riesgos):
             st.markdown(f"{icono} {texto}")
 
-    st.markdown("<div class='section-title'>GRÁFICAS EN TIEMPO REAL (últimas 24 horas)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>GRÁFICAS EN TIEMPO REAL (últimas 6 horas)</div>", unsafe_allow_html=True)
     df = pd.DataFrame({
         "hora": pd.to_datetime(clima["hourly"]["time"]),
         "Temperatura (°C)": clima["hourly"]["temperature_2m"],
@@ -591,8 +592,8 @@ elif seccion == "📊 Resumen":
         "Viento (km/h)": clima["hourly"]["wind_speed_10m"],
         "Lluvia (mm)": clima["hourly"]["precipitation"],
     })
-    ahora = datetime.now()
-    df = df[(df["hora"] >= ahora - timedelta(hours=6)) & (df["hora"] <= ahora + timedelta(hours=1))]
+    ahora_grafico = ahora_real
+    df = df[(df["hora"] >= ahora_grafico - timedelta(hours=6)) & (df["hora"] <= ahora_grafico)]
 
     fig = go.Figure()
     colores = {"Temperatura (°C)": "#ef4444", "Humedad (%)": "#3b82f6",
@@ -676,7 +677,8 @@ elif seccion == "⚠️ Riesgos":
 # SECCIÓN: HISTORIAL
 # ----------------------------------------------------------------------------
 elif seccion == "📈 Historial":
-    st.markdown("<div class='section-title'>HISTORIAL DE 24 HORAS</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>HISTORIAL (ÚLTIMAS 24 HORAS REALES)</div>", unsafe_allow_html=True)
+
     df = pd.DataFrame({
         "Hora": pd.to_datetime(clima["hourly"]["time"]),
         "Temperatura (°C)": clima["hourly"]["temperature_2m"],
@@ -684,6 +686,17 @@ elif seccion == "📈 Historial":
         "Viento (km/h)": clima["hourly"]["wind_speed_10m"],
         "Lluvia (mm)": clima["hourly"]["precipitation"],
     })
+    # Excluir horas futuras: el endpoint de pronóstico trae el día completo,
+    # incluyendo horas que aún no han pasado (esas son pronóstico del modelo,
+    # no una medición real) — aquí solo queremos lo que ya ocurrió.
+    df = df[df["Hora"] <= ahora_real].sort_values("Hora", ascending=False).head(24).reset_index(drop=True)
+
+    st.caption(
+        f"Mostrando solo horas ya transcurridas, hasta las {ahora_real.strftime('%H:%M')} de hoy "
+        f"({ahora_real.strftime('%d/%m/%Y')}). Las horas futuras del día no aparecen aquí porque son "
+        "un pronóstico del modelo, no un dato ya medido — para ver proyecciones a futuro, usa la "
+        "pestaña 🧠 Predicción IA."
+    )
     st.dataframe(df, use_container_width=True, hide_index=True)
     st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
                         file_name=f"earthguardian_{ciudad}_{datetime.now().date()}.csv")
