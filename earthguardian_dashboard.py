@@ -677,7 +677,10 @@ elif seccion == "⚠️ Riesgos":
 # SECCIÓN: HISTORIAL
 # ----------------------------------------------------------------------------
 elif seccion == "📈 Historial":
-    st.markdown("<div class='section-title'>HISTORIAL (ÚLTIMAS 24 HORAS REALES)</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-title'>HISTORIAL REGISTRADO HASTA LA HORA ACTUAL</div>",
+        unsafe_allow_html=True
+    )
 
     df = pd.DataFrame({
         "Hora": pd.to_datetime(clima["hourly"]["time"]),
@@ -686,20 +689,27 @@ elif seccion == "📈 Historial":
         "Viento (km/h)": clima["hourly"]["wind_speed_10m"],
         "Lluvia (mm)": clima["hourly"]["precipitation"],
     })
-    # Excluir horas futuras: el endpoint de pronóstico trae el día completo,
-    # incluyendo horas que aún no han pasado (esas son pronóstico del modelo,
-    # no una medición real) — aquí solo queremos lo que ya ocurrió.
-    df = df[df["Hora"] <= ahora_real].sort_values("Hora", ascending=False).head(24).reset_index(drop=True)
 
-    st.caption(
-        f"Mostrando solo horas ya transcurridas, hasta las {ahora_real.strftime('%H:%M')} de hoy "
-        f"({ahora_real.strftime('%d/%m/%Y')}). Las horas futuras del día no aparecen aquí porque son "
-        "un pronóstico del modelo, no un dato ya medido — para ver proyecciones a futuro, usa la "
-        "pestaña 🧠 Predicción IA."
+    # Hora actual entregada por la propia API
+    hora_actual_api = pd.to_datetime(clima["current"]["time"])
+
+    # Mostrar solo datos que ya ocurrieron
+    df = df[df["Hora"] <= hora_actual_api]
+
+    # Ordenar desde el registro más reciente
+    df = df.sort_values("Hora", ascending=False)
+
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    st.download_button("⬇️ Descargar CSV", df.to_csv(index=False).encode("utf-8"),
-                        file_name=f"earthguardian_{ciudad}_{datetime.now().date()}.csv")
+
+    st.download_button(
+        "⬇️ Descargar CSV",
+        df.to_csv(index=False).encode("utf-8"),
+        file_name=f"earthguardian_{ciudad}_{datetime.now().date()}.csv"
+    )
 
 # ----------------------------------------------------------------------------
 # SECCIÓN: PREDICCIÓN CON RED NEURONAL
