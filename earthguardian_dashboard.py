@@ -129,7 +129,7 @@ st.markdown(
 # ----------------------------------------------------------------------------
 # LLAMADAS A LA API DE OPEN-METEO (cacheadas 5 min)
 # ----------------------------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def obtener_clima(lat: float, lon: float) -> dict:
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
