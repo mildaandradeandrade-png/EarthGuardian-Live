@@ -29,7 +29,9 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+import time
 
+print("Consultando Open-Meteo:", time.strftime("%H:%M:%S"))
 # ----------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ----------------------------------------------------------------------------
@@ -127,7 +129,7 @@ st.markdown(
 # ----------------------------------------------------------------------------
 # LLAMADAS A LA API DE OPEN-METEO (cacheadas 5 min)
 # ----------------------------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def obtener_clima(lat: float, lon: float) -> dict:
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
