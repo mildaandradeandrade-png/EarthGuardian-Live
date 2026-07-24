@@ -431,23 +431,53 @@ def calcular_vpd(temp_c: float, humedad_relativa: float) -> float:
 def obtener_focos_calor_historicos(map_key: str, bbox: tuple, dias_atras: int = 365) -> pd.DataFrame:
     """
     Descarga focos de calor (incendios detectados por satélite) de NASA FIRMS
-    dentro de un bounding box (west, south, east, north), hasta 365 días atrás.
+    dentro de un bounding box (west, south, east, north), hasta `dias_atras` días atrás.
+
+    IMPORTANTE: la API de FIRMS solo acepta un máximo de 10 días por petición
+    (DAY_RANGE: 1-10). Para cubrir periodos más largos (ej. 365 días), hay que
+    pedirlo en bloques de 10 días usando el parámetro de fecha inicial, e ir
+    acumulando los resultados.
     """
     west, south, east, north = bbox
     area = f"{west},{south},{east},{north}"
-    # VIIRS_SNPP_SP = dataset histórico "standard processing" (no solo NRT)
-    url = (f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
-           f"{map_key}/VIIRS_SNPP_SP/{area}/{min(dias_atras, 365)}")
-    try:
-        df = pd.read_csv(url)
-    except Exception as e:
-        raise RuntimeError(f"No se pudo consultar NASA FIRMS: {e}")
+    BLOQUE_MAX_DIAS = 10
 
+    hoy = datetime.now().date()
+    fecha_mas_antigua = hoy - timedelta(days=dias_atras)
+
+    partes = []
+    fecha_inicio_bloque = fecha_mas_antigua
+    while fecha_inicio_bloque <= hoy:
+        # /api/area/csv/[MAP_KEY]/[SOURCE]/[AREA]/[DAY_RANGE]/[DATE]
+        # devuelve datos desde [DATE] hasta [DATE + DAY_RANGE - 1]
+        url = (f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/"
+               f"{map_key}/VIIRS_SNPP_SP/{area}/{BLOQUE_MAX_DIAS}/"
+               f"{fecha_inicio_bloque.isoformat()}")
+        try:
+            bloque = pd.read_csv(url)
+            if not bloque.empty and "acq_date" in bloque.columns:
+                partes.append(bloque)
+        except Exception as e:
+            # Si un bloque puntual falla (ej. timeout momentáneo), no se
+            # aborta todo el histórico — se sigue con el siguiente bloque.
+            # Si TODOS los bloques fallan, más abajo se detecta y se avisa.
+            pass
+
+        fecha_inicio_bloque += timedelta(days=BLOQUE_MAX_DIAS)
+
+    if not partes:
+        raise RuntimeError(
+            "No se pudo obtener ningún dato de NASA FIRMS. Verifica que tu "
+            "MAP_KEY sea correcta y esté activa."
+        )
+
+    df = pd.concat(partes, ignore_index=True)
     if df.empty or "acq_date" not in df.columns:
         return pd.DataFrame(columns=["fecha", "latitude", "longitude"])
 
     df["fecha"] = pd.to_datetime(df["acq_date"]).dt.date
-    return df[["fecha", "latitude", "longitude"]]
+    df = df.drop_duplicates(subset=["fecha", "latitude", "longitude"])
+    return df[["fecha", "latitude", "longitude"]].reset_index(drop=True)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -1163,7 +1193,8 @@ elif seccion == "🔥 Predicción Incendios":
 
     try:
         with col_b:
-            with st.spinner("🧠 Descargando focos de calor históricos y entrenando red neuronal..."):
+            with st.spinner("🧠 Descargando focos de calor históricos (en bloques de 10 días) "
+                             "y entrenando red neuronal... esto puede tardar 20-40 segundos."):
                 modelo_fuego, df_fuego, n_positivos, n_dias_fuego, reporte = entrenar_modelo_incendio(
                     map_key, lat, lon, BBOX_PANAMA, dias_hist_fuego
                 )
