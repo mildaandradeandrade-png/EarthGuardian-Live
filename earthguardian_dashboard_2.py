@@ -560,21 +560,20 @@ def entrenar_modelo_incendio(map_key: str, lat: float, lon: float,
 
 
 def predecir_riesgo_incendio_hoy(modelo, temp_max, humedad, viento, vpd,
-                                   dias_sin_lluvia, evapotranspiracion, radiacion) -> tuple:
+                                   dias_sin_lluvia, evapotranspiracion, radiacion,
+                                   lluvia_7d: float = 0, dias_calor_extremo_7d: int = 0) -> tuple:
     """
     Devuelve (probabilidad_final, probabilidad_cruda_modelo, fue_limitada).
 
     La red neuronal se entrena con muy pocos ejemplos positivos (los
     incendios detectados por satélite son eventos raros), lo que puede
-    producir probabilidades extremas y mal calibradas — por ejemplo, marcar
-    "crítico" incluso cuando llovió recientemente y la humedad es alta.
+    producir probabilidades extremas y mal calibradas.
 
-    Para evitar mostrar un resultado que contradice la lógica climática
-    básica, se aplica un techo de sentido común: si las condiciones actuales
-    son claramente húmedas (llovió hoy/ayer + humedad alta), el riesgo final
-    se limita, sin importar lo que diga el modelo crudo. Esto no reemplaza al
-    modelo, solo evita presentarlo como si fuera 100% confiable cuando el
-    propio contexto climático lo contradice.
+    Se aplica un techo de sentido común SOLO cuando hay evidencia de lluvia
+    SOSTENIDA en la última semana (no solo el día de ayer) — porque un único
+    día de lluvia no rehidrata el combustible seco acumulado por una racha
+    previa de calor extremo y sequía. Si hubo varios días >32°C recientes,
+    el techo se relaja aunque haya llovido puntualmente ayer.
     """
     X_hoy = pd.DataFrame([{
         "temperature_2m_max": temp_max,
@@ -587,14 +586,15 @@ def predecir_riesgo_incendio_hoy(modelo, temp_max, humedad, viento, vpd,
     }])
     probabilidad_cruda = modelo.predict_proba(X_hoy)[0][1] * 100
 
-    # Techo de sentido común: lluvia reciente + humedad alta = condiciones
-    # físicamente poco propicias para un incendio, sin importar lo que
-    # "aprendió" el modelo con pocos ejemplos.
+    # Solo se considera "húmedo de verdad" si llovió de forma sostenida
+    # (>=20mm acumulados en 7 días) Y no hubo una racha de calor extremo
+    # reciente que haya secado el combustible antes de esa lluvia.
+    lluvia_sostenida = lluvia_7d >= 20
+    sin_racha_de_calor_previa = dias_calor_extremo_7d <= 1
+
     techo = 100
-    if dias_sin_lluvia == 0 and humedad >= 85:
-        techo = 25   # llovió hoy y el aire está muy húmedo
-    elif dias_sin_lluvia <= 1 and humedad >= 75:
-        techo = 45   # lluvia muy reciente y humedad moderada-alta
+    if lluvia_sostenida and sin_racha_de_calor_previa and humedad >= 85:
+        techo = 30
 
     probabilidad_final = min(probabilidad_cruda, techo)
     fue_limitada = probabilidad_final < probabilidad_cruda
@@ -626,6 +626,12 @@ def obtener_variables_incendio_hoy(lat: float, lon: float) -> dict:
         else:
             break
 
+    # Contexto de la última semana (no solo hoy): un día de lluvia no
+    # rehidrata de golpe el combustible seco acumulado de días previos.
+    lluvia_7d = lluvia_diaria.tail(7).sum()
+    temp_diaria_max = df.groupby("fecha")["temperature_2m"].max()
+    dias_calor_extremo_7d = int((temp_diaria_max.tail(7) >= 32).sum())
+
     temp_max_hoy = df["temperature_2m"].tail(24).max()
     humedad_prom_hoy = df["relative_humidity_2m"].tail(24).mean()
 
@@ -637,6 +643,8 @@ def obtener_variables_incendio_hoy(lat: float, lon: float) -> dict:
         "dias_sin_lluvia": dias_secos,
         "evapotranspiracion": df["et0_fao_evapotranspiration"].tail(24).sum(),
         "radiacion": df["shortwave_radiation"].tail(24).sum(),
+        "lluvia_7d": round(lluvia_7d, 1),
+        "dias_calor_extremo_7d": dias_calor_extremo_7d,
     }
 
 
@@ -905,7 +913,8 @@ elif seccion == "📊 Resumen":
             st.markdown(f"**{titulo}**")
             st.markdown(f"<p style='color:{color}; font-weight:800; font-size:20px;'>{nivel}</p>",
                         unsafe_allow_html=True)
-            st.plotly_chart(gauge_riesgo(valor, color), use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(gauge_riesgo(valor, color), use_container_width=True,
+                             config={"displayModeBar": False}, key=f"gauge_resumen_{key}")
             st.caption(desc)
 
     with rc5:
@@ -1284,6 +1293,7 @@ elif seccion == "🔥 Predicción Incendios":
             vars_hoy["temp_max"], vars_hoy["humedad"], vars_hoy["viento_max"],
             vars_hoy["vpd"], vars_hoy["dias_sin_lluvia"],
             vars_hoy["evapotranspiracion"], vars_hoy["radiacion"],
+            vars_hoy["lluvia_7d"], vars_hoy["dias_calor_extremo_7d"],
         )
     except requests.exceptions.RequestException as e:
         st.error(f"No se pudo calcular el riesgo de hoy: {e}")
@@ -1291,11 +1301,11 @@ elif seccion == "🔥 Predicción Incendios":
 
     if fue_limitada:
         st.info(
-            f"ℹ️ La red neuronal calculó un riesgo crudo de **{prob_cruda}%**, pero las "
-            f"condiciones actuales (lluvia reciente + humedad alta) hacen ese número poco "
-            f"realista físicamente. Se muestra un valor ajustado de **{prob_hoy}%** por sentido "
-            f"común climático. Esto suele pasar cuando el modelo se entrenó con muy pocos "
-            f"incendios reales — mientras más historial acumules, más confiable será la RNA sola."
+            f"ℹ️ La red neuronal calculó un riesgo crudo de **{prob_cruda}%**, ajustado a "
+            f"**{prob_hoy}%** porque hubo lluvia sostenida (**{vars_hoy['lluvia_7d']}mm** en "
+            f"7 días) sin racha de calor extremo previa. Esto suele pasar cuando el modelo se "
+            f"entrenó con muy pocos incendios reales — mientras más historial acumules, más "
+            f"confiable será la RNA sola."
         )
 
     color_riesgo = ("#22c55e" if prob_hoy < 30 else "#eab308" if prob_hoy < 60
@@ -1306,7 +1316,7 @@ elif seccion == "🔥 Predicción Incendios":
     col_gauge, col_vars = st.columns([1, 2])
     with col_gauge:
         st.plotly_chart(gauge_riesgo(int(prob_hoy), color_riesgo), use_container_width=True,
-                         config={"displayModeBar": False})
+                         config={"displayModeBar": False}, key="gauge_incendio_hoy")
         st.markdown(f"<p style='text-align:center; color:{color_riesgo}; font-weight:800; "
                     f"font-size:20px;'>{nivel_riesgo}</p>", unsafe_allow_html=True)
     with col_vars:
@@ -1316,6 +1326,8 @@ elif seccion == "🔥 Predicción Incendios":
         st.markdown(f"- 🏜️ Días consecutivos sin lluvia: **{vars_hoy['dias_sin_lluvia']}** "
                     f"(0 = llovió hoy)")
         st.markdown(f"- 📉 Déficit de presión de vapor (VPD): **{vars_hoy['vpd']:.2f} kPa**")
+        st.markdown(f"- 🌧️ Lluvia acumulada (últimos 7 días): **{vars_hoy['lluvia_7d']} mm**")
+        st.markdown(f"- 🔥 Días con calor ≥32°C (últimos 7 días): **{vars_hoy['dias_calor_extremo_7d']}**")
 
     st.divider()
 
