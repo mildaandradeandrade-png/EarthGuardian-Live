@@ -586,15 +586,24 @@ def predecir_riesgo_incendio_hoy(modelo, temp_max, humedad, viento, vpd,
     }])
     probabilidad_cruda = modelo.predict_proba(X_hoy)[0][1] * 100
 
-    # Solo se considera "húmedo de verdad" si llovió de forma sostenida
-    # (>=20mm acumulados en 7 días) Y no hubo una racha de calor extremo
-    # reciente que haya secado el combustible antes de esa lluvia.
-    lluvia_sostenida = lluvia_7d >= 20
+    # Techo escalonado según lluvia acumulada real en 7 días — este dato es
+    # mucho más confiable que un umbral fijo de humedad relativa (que puede
+    # fallar por muy poco, ej. 80% vs 85%, sin reflejar la realidad).
+    # Solo se relaja el techo si NO hubo una racha de calor extremo previa
+    # que haya secado el combustible antes de la lluvia.
     sin_racha_de_calor_previa = dias_calor_extremo_7d <= 1
 
-    techo = 100
-    if lluvia_sostenida and sin_racha_de_calor_previa and humedad >= 85:
-        techo = 30
+    if sin_racha_de_calor_previa:
+        if lluvia_7d >= 80:
+            techo = 20    # lluvia muy fuerte y sostenida: suelo y combustible saturados
+        elif lluvia_7d >= 40:
+            techo = 35
+        elif lluvia_7d >= 20:
+            techo = 55
+        else:
+            techo = 100
+    else:
+        techo = 100   # hubo calor extremo reciente: no se relaja el techo aunque haya llovido
 
     probabilidad_final = min(probabilidad_cruda, techo)
     fue_limitada = probabilidad_final < probabilidad_cruda
