@@ -440,7 +440,10 @@ def obtener_focos_calor_historicos(map_key: str, bbox: tuple, dias_atras: int = 
     """
     west, south, east, north = bbox
     area = f"{west},{south},{east},{north}"
-    BLOQUE_MAX_DIAS = 10
+    # NOTA: la documentación general de FIRMS dice que el máximo es 10 días,
+    # pero algunas MAP_KEY (según el tipo de cuenta) están limitadas a 5.
+    # Se usa 5 para que funcione de forma consistente en todos los casos.
+    BLOQUE_MAX_DIAS = 5
 
     hoy = datetime.now().date()
     fecha_mas_antigua = hoy - timedelta(days=dias_atras)
@@ -557,8 +560,22 @@ def entrenar_modelo_incendio(map_key: str, lat: float, lon: float,
 
 
 def predecir_riesgo_incendio_hoy(modelo, temp_max, humedad, viento, vpd,
-                                   dias_sin_lluvia, evapotranspiracion, radiacion) -> float:
-    """Devuelve la probabilidad (%) de que ocurra un incendio, según el modelo entrenado."""
+                                   dias_sin_lluvia, evapotranspiracion, radiacion) -> tuple:
+    """
+    Devuelve (probabilidad_final, probabilidad_cruda_modelo, fue_limitada).
+
+    La red neuronal se entrena con muy pocos ejemplos positivos (los
+    incendios detectados por satélite son eventos raros), lo que puede
+    producir probabilidades extremas y mal calibradas — por ejemplo, marcar
+    "crítico" incluso cuando llovió recientemente y la humedad es alta.
+
+    Para evitar mostrar un resultado que contradice la lógica climática
+    básica, se aplica un techo de sentido común: si las condiciones actuales
+    son claramente húmedas (llovió hoy/ayer + humedad alta), el riesgo final
+    se limita, sin importar lo que diga el modelo crudo. Esto no reemplaza al
+    modelo, solo evita presentarlo como si fuera 100% confiable cuando el
+    propio contexto climático lo contradice.
+    """
     X_hoy = pd.DataFrame([{
         "temperature_2m_max": temp_max,
         "relative_humidity_2m_mean": humedad,
@@ -568,8 +585,21 @@ def predecir_riesgo_incendio_hoy(modelo, temp_max, humedad, viento, vpd,
         "et0_fao_evapotranspiration": evapotranspiracion,
         "shortwave_radiation_sum": radiacion,
     }])
-    probabilidad = modelo.predict_proba(X_hoy)[0][1]
-    return round(probabilidad * 100, 1)
+    probabilidad_cruda = modelo.predict_proba(X_hoy)[0][1] * 100
+
+    # Techo de sentido común: lluvia reciente + humedad alta = condiciones
+    # físicamente poco propicias para un incendio, sin importar lo que
+    # "aprendió" el modelo con pocos ejemplos.
+    techo = 100
+    if dias_sin_lluvia == 0 and humedad >= 85:
+        techo = 25   # llovió hoy y el aire está muy húmedo
+    elif dias_sin_lluvia <= 1 and humedad >= 75:
+        techo = 45   # lluvia muy reciente y humedad moderada-alta
+
+    probabilidad_final = min(probabilidad_cruda, techo)
+    fue_limitada = probabilidad_final < probabilidad_cruda
+
+    return round(probabilidad_final, 1), round(probabilidad_cruda, 1), fue_limitada
 
 
 @st.cache_data(ttl=1800)
@@ -1193,8 +1223,8 @@ elif seccion == "🔥 Predicción Incendios":
 
     try:
         with col_b:
-            with st.spinner("🧠 Descargando focos de calor históricos (en bloques de 10 días) "
-                             "y entrenando red neuronal... esto puede tardar 20-40 segundos."):
+            with st.spinner("🧠 Descargando focos de calor históricos (en bloques de 5 días) "
+                             "y entrenando red neuronal... esto puede tardar 40-80 segundos."):
                 modelo_fuego, df_fuego, n_positivos, n_dias_fuego, reporte = entrenar_modelo_incendio(
                     map_key, lat, lon, BBOX_PANAMA, dias_hist_fuego
                 )
@@ -1249,7 +1279,7 @@ elif seccion == "🔥 Predicción Incendios":
     st.markdown("### 🔮 Riesgo de incendio hoy")
     try:
         vars_hoy = obtener_variables_incendio_hoy(lat, lon)
-        prob_hoy = predecir_riesgo_incendio_hoy(
+        prob_hoy, prob_cruda, fue_limitada = predecir_riesgo_incendio_hoy(
             modelo_fuego,
             vars_hoy["temp_max"], vars_hoy["humedad"], vars_hoy["viento_max"],
             vars_hoy["vpd"], vars_hoy["dias_sin_lluvia"],
@@ -1258,6 +1288,15 @@ elif seccion == "🔥 Predicción Incendios":
     except requests.exceptions.RequestException as e:
         st.error(f"No se pudo calcular el riesgo de hoy: {e}")
         st.stop()
+
+    if fue_limitada:
+        st.info(
+            f"ℹ️ La red neuronal calculó un riesgo crudo de **{prob_cruda}%**, pero las "
+            f"condiciones actuales (lluvia reciente + humedad alta) hacen ese número poco "
+            f"realista físicamente. Se muestra un valor ajustado de **{prob_hoy}%** por sentido "
+            f"común climático. Esto suele pasar cuando el modelo se entrenó con muy pocos "
+            f"incendios reales — mientras más historial acumules, más confiable será la RNA sola."
+        )
 
     color_riesgo = ("#22c55e" if prob_hoy < 30 else "#eab308" if prob_hoy < 60
                      else "#f97316" if prob_hoy < 80 else "#ef4444")
@@ -1274,7 +1313,8 @@ elif seccion == "🔥 Predicción Incendios":
         st.markdown(f"- 🌡️ Temperatura máxima (24h): **{vars_hoy['temp_max']:.1f}°C**")
         st.markdown(f"- 💧 Humedad relativa promedio: **{vars_hoy['humedad']:.0f}%**")
         st.markdown(f"- 💨 Viento máximo (24h): **{vars_hoy['viento_max']:.0f} km/h**")
-        st.markdown(f"- 🏜️ Días consecutivos sin lluvia: **{vars_hoy['dias_sin_lluvia']}**")
+        st.markdown(f"- 🏜️ Días consecutivos sin lluvia: **{vars_hoy['dias_sin_lluvia']}** "
+                    f"(0 = llovió hoy)")
         st.markdown(f"- 📉 Déficit de presión de vapor (VPD): **{vars_hoy['vpd']:.2f} kPa**")
 
     st.divider()
