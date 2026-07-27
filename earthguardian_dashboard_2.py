@@ -399,8 +399,126 @@ def pronosticar(modelo, ultimo_tiempo, horas: int, limites: tuple) -> pd.DataFra
 
 
 # ----------------------------------------------------------------------------
-# PREDICCIÓN DE INCENDIOS CON RED NEURONAL (MLPClassifier)
+# PREDICCIÓN DE CALIDAD DEL AIRE CON RED NEURONAL (MLPRegressor)
 # ----------------------------------------------------------------------------
+# A diferencia de incendios, aquí SÍ existe histórico real y continuo de AQI
+# directamente en Open-Meteo (Air Quality API), así que no hace falta ningún
+# truco con eventos raros — es una regresión normal, igual que temperatura,
+# pero alimentada además con viento, lluvia y humedad (que son los factores
+# que más mueven la contaminación día a día: el viento la dispersa, la
+# lluvia la "lava" del aire).
+# ----------------------------------------------------------------------------
+FEATURES_AIRE = ["hora_sin", "hora_cos", "doy_sin", "doy_cos",
+                  "wind_speed_10m", "precipitation", "relative_humidity_2m"]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def obtener_historico_aire(lat: float, lon: float, dias: int = 180) -> pd.DataFrame:
+    """Histórico horario real de AQI europeo + PM2.5 + CO, con variables cíclicas y clima."""
+    fin = datetime.now().date() - timedelta(days=1)
+    inicio = fin - timedelta(days=dias)
+
+    data_aire = peticion_con_reintento(
+        "https://air-quality-api.open-meteo.com/v1/air-quality",
+        {"latitude": lat, "longitude": lon,
+         "start_date": inicio.isoformat(), "end_date": fin.isoformat(),
+         "hourly": "european_aqi,pm2_5,pm10,carbon_monoxide", "timezone": "America/Panama"},
+        timeout=30,
+    )
+    data_clima = peticion_con_reintento(
+        "https://archive-api.open-meteo.com/v1/archive",
+        {"latitude": lat, "longitude": lon,
+         "start_date": inicio.isoformat(), "end_date": fin.isoformat(),
+         "hourly": "wind_speed_10m,precipitation,relative_humidity_2m",
+         "timezone": "America/Panama"},
+        timeout=30,
+    )
+
+    df_aire = pd.DataFrame(data_aire["hourly"])
+    df_clima = pd.DataFrame(data_clima["hourly"])
+    df = pd.merge(df_aire, df_clima, on="time", how="inner")
+    df["time"] = pd.to_datetime(df["time"])
+
+    df["hora_sin"] = np.sin(2 * np.pi * df["time"].dt.hour / 24)
+    df["hora_cos"] = np.cos(2 * np.pi * df["time"].dt.hour / 24)
+    df["doy_sin"] = np.sin(2 * np.pi * df["time"].dt.dayofyear / 365)
+    df["doy_cos"] = np.cos(2 * np.pi * df["time"].dt.dayofyear / 365)
+
+    return df.dropna().reset_index(drop=True)
+
+
+# Variables que se pueden predecir en esta sección, con su columna real de
+# Open-Meteo y la unidad para mostrar en pantalla.
+VARIABLES_AIRE_DISPONIBLES = {
+    "AQI europeo (calidad general)": {"columna": "european_aqi", "unidad": "AQI"},
+    "Monóxido de carbono (CO)": {"columna": "carbon_monoxide", "unidad": "µg/m³"},
+}
+
+
+@st.cache_resource(show_spinner="🧠 Entrenando red neuronal de calidad del aire...")
+def entrenar_modelo_aire(lat: float, lon: float, dias: int, columna_objetivo: str = "european_aqi"):
+    """MLP: aprende hora + época del año + viento/lluvia/humedad → variable objetivo (AQI o CO)."""
+    df = obtener_historico_aire(lat, lon, dias)
+    corte = int(len(df) * 0.85)
+    train, test = df.iloc[:corte], df.iloc[corte:]
+
+    modelo = make_pipeline(
+        StandardScaler(),
+        MLPRegressor(hidden_layer_sizes=(16, 8), max_iter=3000,
+                     random_state=42, early_stopping=True),
+    )
+    modelo.fit(train[FEATURES_AIRE], train[columna_objetivo])
+
+    pred_test = modelo.predict(test[FEATURES_AIRE])
+    mae = mean_absolute_error(test[columna_objetivo], pred_test)
+    r2 = r2_score(test[columna_objetivo], pred_test)
+    limites = (max(0, df[columna_objetivo].min() - 5), df[columna_objetivo].max() + 5)
+    return modelo, df, mae, r2, test, pred_test, limites
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def obtener_pronostico_meteo_aire(lat: float, lon: float, horas: int) -> pd.DataFrame:
+    """
+    Trae viento/lluvia/humedad FUTUROS reales del pronóstico de Open-Meteo
+    (no inventados), para alimentar al modelo de AQI con condiciones
+    meteorológicas reales de los próximos días, no solo el patrón cíclico.
+    """
+    dias_pronostico = min(16, max(1, -(-horas // 24)))  # redondeo hacia arriba
+    data = peticion_con_reintento(
+        "https://api.open-meteo.com/v1/forecast",
+        {"latitude": lat, "longitude": lon,
+         "hourly": "wind_speed_10m,precipitation,relative_humidity_2m",
+         "forecast_days": dias_pronostico, "timezone": "America/Panama"},
+        timeout=20,
+    )
+    df = pd.DataFrame(data["hourly"])
+    df["time"] = pd.to_datetime(df["time"])
+    return df
+
+
+def pronosticar_aire(modelo, ultimo_tiempo, horas: int, limites: tuple,
+                       lat: float, lon: float) -> pd.DataFrame:
+    """Predice AQI hacia adelante combinando patrón cíclico + clima futuro real."""
+    meteo_futuro = obtener_pronostico_meteo_aire(lat, lon, horas)
+    tiempos = [ultimo_tiempo + timedelta(hours=i) for i in range(1, horas + 1)]
+
+    X = pd.DataFrame({"time": tiempos})
+    X["hora_sin"] = np.sin(2 * np.pi * X["time"].dt.hour / 24)
+    X["hora_cos"] = np.cos(2 * np.pi * X["time"].dt.hour / 24)
+    X["doy_sin"] = np.sin(2 * np.pi * X["time"].dt.dayofyear / 365)
+    X["doy_cos"] = np.cos(2 * np.pi * X["time"].dt.dayofyear / 365)
+
+    # Cruza con el clima futuro real por hora; si falta algún dato (fuera del
+    # rango del pronóstico), usa el promedio histórico como respaldo.
+    X = pd.merge(X, meteo_futuro, on="time", how="left")
+    for col in ["wind_speed_10m", "precipitation", "relative_humidity_2m"]:
+        X[col] = X[col].fillna(X[col].mean() if X[col].notna().any() else 0)
+
+    preds = np.clip(modelo.predict(X[FEATURES_AIRE]), *limites)
+    return pd.DataFrame({"time": tiempos, "aqi_predicho": preds})
+
+
+
 # Fuente de eventos reales de incendio: NASA FIRMS (satélites VIIRS), gratis
 # con registro en https://firms.modaps.eosdis.nasa.gov/api/map_key/
 # Se busca en TODA la provincia de Panamá (bounding box amplio) para maximizar
@@ -657,7 +775,8 @@ with st.sidebar:
     seccion = st.radio(
         "Navegación",
         ["🏠 Inicio", "📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial",
-         "🧠 Predicción IA", "🔥 Predicción Incendios", "📄 Acerca del proyecto"],
+         "🧠 Predicción IA", "🔥 Predicción Incendios", "💨 Predicción Aire",
+         "📄 Acerca del proyecto"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1363,6 +1482,115 @@ elif seccion == "🔥 Predicción Incendios":
         "de hoy usa las condiciones climáticas locales de la ciudad seleccionada. Los focos de calor "
         "satelitales pueden incluir quemas agrícolas controladas, no solo incendios forestales "
         "descontrolados."
+    )
+
+# ----------------------------------------------------------------------------
+# SECCIÓN: PREDICCIÓN DE CALIDAD DEL AIRE CON RED NEURONAL (MLPRegressor)
+# ----------------------------------------------------------------------------
+elif seccion == "💨 Predicción Aire":
+    st.markdown("<div class='section-title'>PREDICCIÓN DE CALIDAD DEL AIRE CON RED NEURONAL</div>",
+                unsafe_allow_html=True)
+    st.caption(
+        f"Red neuronal MLP entrenada con el histórico real de **{ciudad}, {provincia}**, "
+        f"combinando el patrón hora-del-día + época-del-año con viento, lluvia y humedad reales "
+        f"(los factores que más mueven la contaminación día a día)."
+    )
+
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        variable_elegida = st.selectbox("Variable a predecir", list(VARIABLES_AIRE_DISPONIBLES.keys()))
+        columna_aire = VARIABLES_AIRE_DISPONIBLES[variable_elegida]["columna"]
+        unidad_aire = VARIABLES_AIRE_DISPONIBLES[variable_elegida]["unidad"]
+
+        dias_hist_aire = st.slider("Días de historial para entrenar", 30, 180, 90, step=30)
+        horizonte_aire = st.radio(
+            "Horizonte de predicción",
+            ["🕐 Próximas 24 horas", "📅 Próximos 7 días"],
+        )
+        horas_pred_aire = 24 if horizonte_aire.startswith("🕐") else 24 * 7
+        if st.button("🔄 Reentrenar desde cero", use_container_width=True, key="reentrenar_aire"):
+            entrenar_modelo_aire.clear()
+
+    try:
+        with col_b:
+            (modelo_aire, df_aire, mae_aire, r2_aire,
+             test_aire, pred_test_aire, limites_aire) = entrenar_modelo_aire(
+                lat, lon, dias_hist_aire, columna_aire
+            )
+    except requests.exceptions.RequestException as e:
+        if "429" in str(e):
+            st.error("⏳ Open-Meteo está limitando las peticiones. Espera un minuto e inténtalo de nuevo.")
+        else:
+            st.error(f"No se pudo descargar el histórico de calidad del aire: {e}")
+        st.stop()
+
+    with st.spinner(f"Calculando pronóstico para las próximas {horas_pred_aire} horas..."):
+        pronostico_aire = pronosticar_aire(modelo_aire, df_aire["time"].iloc[-1],
+                                             horas_pred_aire, limites_aire, lat, lon)
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.markdown(f"<div class='card'><h3>📊 Error medio (MAE)</h3>"
+                    f"<p class='value'>{mae_aire:.1f} {unidad_aire}</p></div>", unsafe_allow_html=True)
+    with m2:
+        st.markdown(f"<div class='card'><h3>🎯 R² (ajuste en validación)</h3>"
+                    f"<p class='value'>{r2_aire:.3f}</p></div>", unsafe_allow_html=True)
+    with m3:
+        st.markdown(f"<div class='card'><h3>💨 {variable_elegida.split('(')[0].strip()} actual</h3>"
+                    f"<p class='value'>{df_aire[columna_aire].iloc[-1]:.1f}</p></div>",
+                    unsafe_allow_html=True)
+
+    calidad_r2_aire = ("excelente" if r2_aire >= 0.7 else "buena" if r2_aire >= 0.5 else
+                        "aceptable" if r2_aire >= 0.3 else "débil")
+    with st.expander("❓ ¿Qué significan el MAE y el R² aquí?"):
+        st.markdown(
+            f"**MAE** — en promedio, la predicción se equivoca por **±{mae_aire:.1f} {unidad_aire}** "
+            f"respecto al valor real.\n\n"
+            f"**R²** — qué tanto explica el modelo la variación real de esta variable, de 0 a 1. Con "
+            f"**{r2_aire:.3f}** el ajuste es **{calidad_r2_aire}**. La calidad del aire es más "
+            f"errática que la temperatura (depende de tráfico, quemas puntuales, construcciones "
+            f"cercanas, etc.), así que un R² más bajo que el de temperatura es normal y esperado."
+        )
+
+    fig_aire = go.Figure()
+    ultimos_aire = df_aire.tail(7 * 24)
+    fig_aire.add_trace(go.Scatter(x=ultimos_aire["time"], y=ultimos_aire[columna_aire],
+                                    name=f"{variable_elegida} real (histórico)", line=dict(color="#3b82f6")))
+    fig_aire.add_trace(go.Scatter(x=test_aire["time"], y=pred_test_aire,
+                                    name="Predicción en validación", line=dict(color="#eab308", dash="dot")))
+    fig_aire.add_trace(go.Scatter(x=pronostico_aire["time"], y=pronostico_aire["aqi_predicho"],
+                                    name="Pronóstico", line=dict(color="#22c55e", dash="dash")))
+    fig_aire.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#e5e7eb"), legend=dict(orientation="h", y=1.15),
+        xaxis=dict(gridcolor="#1f2937"), yaxis=dict(gridcolor="#1f2937", title=unidad_aire),
+        margin=dict(l=10, r=10, t=10, b=10), height=420,
+    )
+    st.plotly_chart(fig_aire, use_container_width=True, key="chart_aire_pronostico")
+
+    st.markdown("#### 📋 Pronóstico detallado")
+    tabla_aire = pronostico_aire.copy()
+    tabla_aire["Hora"] = tabla_aire["time"].dt.strftime("%d/%m %H:%M")
+    tabla_aire[f"Predicho ({unidad_aire})"] = tabla_aire["aqi_predicho"].round(1)
+    if columna_aire == "european_aqi":
+        tabla_aire["Nivel"] = tabla_aire["aqi_predicho"].apply(
+            lambda v: "Buena" if v < 20 else "Moderada" if v < 40 else "Mala" if v < 60 else "Muy mala"
+        )
+        st.dataframe(tabla_aire[["Hora", f"Predicho ({unidad_aire})", "Nivel"]],
+                     use_container_width=True, hide_index=True)
+    else:
+        st.dataframe(tabla_aire[["Hora", f"Predicho ({unidad_aire})"]],
+                     use_container_width=True, hide_index=True)
+
+    st.caption(
+        "⚠️ Modelo educativo: el patrón hora/época del año explica la parte predecible de la "
+        "contaminación (tráfico en horas pico, quemas de temporada seca, etc.), combinado con "
+        "viento/lluvia/humedad reales del pronóstico de Open-Meteo. No captura eventos puntuales "
+        "impredecibles como una quema agrícola específica o un accidente industrial ese día. "
+        "Nota: el dióxido de carbono (CO₂) no se incluye porque es un gas que se mezcla de forma "
+        "global en la atmósfera y no varía de forma significativa entre ciudades — por eso ninguna "
+        "API de calidad del aire lo rastrea a nivel local; en su lugar se usa el monóxido de carbono "
+        "(CO), que sí es un contaminante urbano real ligado al tráfico."
     )
 
 # ----------------------------------------------------------------------------
