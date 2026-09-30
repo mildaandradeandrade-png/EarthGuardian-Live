@@ -816,12 +816,12 @@ with col_city:
 lat, lon = PROVINCIAS[provincia][ciudad]["lat"], PROVINCIAS[provincia][ciudad]["lon"]
 
 # --- Mapa de Panamá como encabezado/banner ---
-fig_banner = go.Figure(go.Scattermapbox(
+fig_banner = go.Figure(go.Scattermap(
     lat=[lat], lon=[lon], mode="markers",
     marker=dict(size=17, color="#22c55e"),
 ))
 fig_banner.update_layout(
-    mapbox=dict(style="carto-darkmatter", zoom=5.7, center=dict(lat=8.6, lon=-80.2)),
+    map=dict(style="carto-darkmatter", zoom=5.7, center=dict(lat=8.6, lon=-80.2)),
     margin=dict(l=0, r=0, t=0, b=0), height=130,
     paper_bgcolor="rgba(0,0,0,0)", showlegend=False,
 )
@@ -1111,7 +1111,7 @@ elif seccion == "🗺️ Mapa":
                            "Temp (°C)": c["temperature_2m"], "Riesgo promedio": promedio})
         df_mapa = pd.DataFrame(filas)
 
-        fig_mapa = go.Figure(go.Scattermapbox(
+        fig_mapa = go.Figure(go.Scattermap(
             lat=df_mapa["lat"], lon=df_mapa["lon"],
             mode="markers+text",
             marker=dict(size=22, color=df_mapa["Riesgo promedio"],
@@ -1122,7 +1122,7 @@ elif seccion == "🗺️ Mapa":
             textfont=dict(color="#e5e7eb", size=12),
         ))
         fig_mapa.update_layout(
-            mapbox=dict(style="carto-darkmatter", zoom=6.3,
+            map=dict(style="carto-darkmatter", zoom=6.3,
                          center=dict(lat=8.6, lon=-80.2)),
             margin=dict(l=0, r=0, t=0, b=0), height=560,
             paper_bgcolor="rgba(0,0,0,0)",
@@ -1455,18 +1455,18 @@ elif seccion == "🔥 Predicción Incendios":
         focos_mapa = obtener_focos_calor_historicos(map_key, BBOX_PANAMA, dias_hist_fuego)
         if not focos_mapa.empty:
             fig_focos = go.Figure()
-            fig_focos.add_trace(go.Scattermapbox(
+            fig_focos.add_trace(go.Scattermap(
                 lat=focos_mapa["latitude"], lon=focos_mapa["longitude"],
                 mode="markers", name="Focos de calor",
                 marker=dict(size=7, color="#ef4444", opacity=0.6),
             ))
             # Resalta la ciudad seleccionada para dar contexto de referencia
-            fig_focos.add_trace(go.Scattermapbox(
+            fig_focos.add_trace(go.Scattermap(
                 lat=[lat], lon=[lon], mode="markers", name=f"{ciudad} (seleccionada)",
                 marker=dict(size=16, color="#22c55e"),
             ))
             fig_focos.update_layout(
-                mapbox=dict(style="carto-darkmatter", zoom=6.2,
+                map=dict(style="carto-darkmatter", zoom=6.2,
                              center=dict(lat=8.6, lon=-80.2)),
                 margin=dict(l=0, r=0, t=0, b=0), height=460,
                 paper_bgcolor="rgba(0,0,0,0)",
