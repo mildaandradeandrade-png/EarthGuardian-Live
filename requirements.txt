@@ -1,5 +1,5 @@
 streamlit
-plotly
+plotly>=7.0.0,<8.0.0
 pandas
 requests
 numpy
