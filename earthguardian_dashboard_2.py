@@ -776,7 +776,7 @@ with st.sidebar:
         "Navegación",
         ["🏠 Inicio", "📊 Resumen", "🗺️ Mapa", "⚠️ Riesgos", "📈 Historial",
          "🧠 Predicción IA", "🔥 Predicción Incendios", "💨 Predicción Aire",
-         "📄 Acerca del proyecto", "👩‍💻 Perfil de la creadora"],
+         "📄 Acerca del proyecto"],
         label_visibility="collapsed",
     )
     st.divider()
@@ -1656,28 +1656,7 @@ elif seccion == "📄 Acerca del proyecto":
     st.markdown("### ✍️ Autores")
     st.markdown("**Luz Alba Andrade**")
 
-elif seccion == "👩‍💻 Perfil de la creadora":
-    st.markdown("<div class='section-title'>PERFIL DE LA CREADORA</div>", unsafe_allow_html=True)
-    foto_col, texto_col = st.columns([1, 2])
-    with foto_col:
-        st.image("assets/luz-alba-andrade.jpg", caption="Luz Alba Andrade", use_container_width=True)
-    with texto_col:
-        st.markdown("## Luz Alba Andrade")
-        st.markdown(
-            "**Innovación · Transformación digital · Inteligencia artificial · Seguridad informática**"
-        )
-        st.markdown(
-            "Profesional en innovación, transformación digital, inteligencia artificial y seguridad informática. "
-            "Cuenta con una **Maestría en Seguridad Informática**, **15 años de experiencia en transformación "
-            "digital** y **16 años de docencia universitaria**. Se desempeñó como **Directora de Investigación "
-            "en la Universidad Latina de Panamá**."
-        )
-        st.markdown(
-            "EarthGuardian Live refleja su interés en aplicar datos abiertos, análisis ambiental e inteligencia "
-            "artificial al monitoreo de riesgos ambientales en Panamá."
-        )
-
-st.markdown(
+elif seccion == "👩‍💻 Perfil dst.markdown(
     """
     <div style='text-align:center; padding:28px 0 10px 0; margin-top:20px;
                 border-top:1px solid #1f2937; color:#9ca3af;'>
