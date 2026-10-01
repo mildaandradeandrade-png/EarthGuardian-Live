@@ -1656,7 +1656,7 @@ elif seccion == "📄 Acerca del proyecto":
     st.markdown("### ✍️ Autores")
     st.markdown("**Luz Alba Andrade**")
 
-elif seccion == "👩‍💻 Perfil dst.markdown(
+st.markdown(
     """
     <div style='text-align:center; padding:28px 0 10px 0; margin-top:20px;
                 border-top:1px solid #1f2937; color:#9ca3af;'>
